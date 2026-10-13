@@ -1,0 +1,21 @@
+{
+  "name": "studia-backend",
+  "version": "1.0.0",
+  "description": "Backend API service for Studia desktop application (Gemini AI proxy & validation)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --experimental-strip-types src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/backend.test.ts",
+    "test:live-gemini": "node --experimental-strip-types test/live-gemini.manual.ts"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3"
+  }
+}
