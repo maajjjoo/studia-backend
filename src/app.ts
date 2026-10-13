@@ -108,7 +108,7 @@ export function createBackendServer(
     config.globalRateLimitMaxRequests
   );
 
-  return http.createServer(async (req, res) => {
+  return http.createServer(async (req: http.IncomingMessage, res: http.ServerResponse) => {
     applySecurityAndCorsHeaders(req, res, config.corsOrigin);
 
     if (req.method === 'OPTIONS') {
