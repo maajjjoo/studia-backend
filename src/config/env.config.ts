@@ -2,7 +2,10 @@ import { AppError } from '../errors/app-error.ts';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 export const DEFAULT_PORT = 3000;
-export const DEFAULT_TIMEOUT_MS = 20000;
+export const DEFAULT_GEMINI_TIMEOUT_MS = 35000;
+export const DEFAULT_GEMINI_TOTAL_TIMEOUT_MS = 55000;
+export const DEFAULT_TIMEOUT_MS = DEFAULT_GEMINI_TIMEOUT_MS;
+export const DEFAULT_GEMINI_MAX_RETRIES = 2;
 export const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
 export const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 15;
 export const DEFAULT_GLOBAL_RATE_LIMIT_MAX = 60;
@@ -13,6 +16,9 @@ export interface BackendConfig {
   geminiApiKey: string;
   geminiModel: string;
   geminiTimeoutMs: number;
+  geminiTotalTimeoutMs: number;
+  geminiMaxRetries: number;
+  geminiRetryBaseDelayMs?: number;
   rateLimitWindowMs: number;
   rateLimitMaxRequests: number;
   globalRateLimitMaxRequests: number;
@@ -51,11 +57,35 @@ export function loadBackendConfig(
   const port = parsePositiveInt(env.PORT, DEFAULT_PORT, 1, 65535, 'PORT');
   const geminiTimeoutMs = parsePositiveInt(
     env.GEMINI_TIMEOUT_MS,
-    DEFAULT_TIMEOUT_MS,
-    1000,
-    60000,
+    DEFAULT_GEMINI_TIMEOUT_MS,
+    50,
+    120000,
     'GEMINI_TIMEOUT_MS'
   );
+  const geminiTotalTimeoutMs = parsePositiveInt(
+    env.GEMINI_TOTAL_TIMEOUT_MS,
+    DEFAULT_GEMINI_TOTAL_TIMEOUT_MS,
+    50,
+    180000,
+    'GEMINI_TOTAL_TIMEOUT_MS'
+  );
+  const geminiMaxRetries = parsePositiveInt(
+    env.GEMINI_MAX_RETRIES,
+    DEFAULT_GEMINI_MAX_RETRIES,
+    0,
+    5,
+    'GEMINI_MAX_RETRIES'
+  );
+  const geminiRetryBaseDelayMs =
+    env.GEMINI_RETRY_BASE_DELAY_MS !== undefined && env.GEMINI_RETRY_BASE_DELAY_MS.trim() !== ''
+      ? parsePositiveInt(
+          env.GEMINI_RETRY_BASE_DELAY_MS,
+          1500,
+          1,
+          30000,
+          'GEMINI_RETRY_BASE_DELAY_MS'
+        )
+      : undefined;
   const rateLimitWindowMs = parsePositiveInt(
     env.RATE_LIMIT_WINDOW_MS,
     DEFAULT_RATE_LIMIT_WINDOW_MS,
@@ -104,6 +134,9 @@ export function loadBackendConfig(
     geminiApiKey,
     geminiModel,
     geminiTimeoutMs,
+    geminiTotalTimeoutMs,
+    geminiMaxRetries,
+    geminiRetryBaseDelayMs,
     rateLimitWindowMs,
     rateLimitMaxRequests,
     globalRateLimitMaxRequests,
