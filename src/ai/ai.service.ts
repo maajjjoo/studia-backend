@@ -16,7 +16,7 @@ export class AiService {
     }
   }
 
-  public async generateReply(dto: ChatRequestDto): Promise<AiChatResult> {
+  public async generateReply(dto: ChatRequestDto, clientSignal?: AbortSignal): Promise<AiChatResult> {
     const topicEvaluation = evaluateMessageTopic(dto.messages);
 
     if (!topicEvaluation.allowed) {
@@ -27,7 +27,11 @@ export class AiService {
     }
 
     const systemInstruction = buildSystemInstruction(dto.academicContext);
-    const rawResult = await this.geminiClient.sendGenerateContent(dto.messages, systemInstruction);
+    const rawResult = await this.geminiClient.sendGenerateContent(
+      dto.messages,
+      systemInstruction,
+      clientSignal
+    );
     const sanitizedReply = sanitizeAssistantReply(rawResult.reply);
 
     if (!sanitizedReply) {
@@ -44,7 +48,7 @@ export class AiService {
     };
   }
 
-  public async generateChatReply(dto: ChatRequestDto): Promise<AiChatResult> {
-    return this.generateReply(dto);
+  public async generateChatReply(dto: ChatRequestDto, clientSignal?: AbortSignal): Promise<AiChatResult> {
+    return this.generateReply(dto, clientSignal);
   }
 }

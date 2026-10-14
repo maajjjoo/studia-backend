@@ -131,8 +131,15 @@ export function createBackendServer(
         const clientIp = getClientIp(req);
         rateLimiter.checkAndRecord(clientIp);
 
+        const clientAbortController = new AbortController();
+        res.on('close', () => {
+          if (!res.writableEnded) {
+            clientAbortController.abort();
+          }
+        });
+
         const body = await readJsonBody(req, config.maxBodyBytes);
-        const result = await aiController.handleChat(body);
+        const result = await aiController.handleChat(body, clientAbortController.signal);
         sendJson(res, 200, result);
         return;
       }

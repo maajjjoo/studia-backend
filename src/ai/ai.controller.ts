@@ -9,9 +9,9 @@ export class AiController {
     this.aiService = aiService;
   }
 
-  public async handleChat(rawBody: unknown): Promise<AiChatSuccessEnvelope> {
+  public async handleChat(rawBody: unknown, clientSignal?: AbortSignal): Promise<AiChatSuccessEnvelope> {
     const validatedDto = validateChatRequestDto(rawBody);
-    const result = await this.aiService.generateReply(validatedDto);
+    const result = await this.aiService.generateReply(validatedDto, clientSignal);
     return {
       ok: true,
       data: result,
