@@ -25,6 +25,7 @@ async function withTestServer(
     RATE_LIMIT_MAX_REQUESTS: '5',
     GLOBAL_RATE_LIMIT_MAX_REQUESTS: '20',
     MAX_BODY_BYTES: '4096',
+    GEMINI_RETRY_BASE_DELAY_MS: '10',
     ...envOverrides,
   });
 
@@ -621,3 +622,223 @@ test('8. Manejo de errores del proveedor y garantía de que ninguna respuesta ni
     }
   );
 });
+
+test('9. Reintentos de Gemini: 503 seguido de respuesta exitosa', async () => {
+  let calls = 0;
+  const mockFetch: FetchLike = async () => {
+    calls++;
+    if (calls === 1) {
+      return new Response(
+        JSON.stringify({ error: { code: 503, message: 'The model is overloaded.', status: 'UNAVAILABLE' } }),
+        { status: 503 }
+      );
+    }
+    return new Response(
+      JSON.stringify({
+        candidates: [{ content: { role: 'model', parts: [{ text: 'Respuesta tras reintento.' }] } }],
+      }),
+      { status: 200 }
+    );
+  };
+
+  await withTestServer({ GEMINI_RETRY_BASE_DELAY_MS: '10' }, mockFetch, async baseUrl => {
+    const res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '¿Cómo organizo mis tareas?' }],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(calls, 2);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.data.reply, 'Respuesta tras reintento.');
+  });
+});
+
+test('10. Reintentos de Gemini: Dos fallos 503 temporales agotan reintentos y devuelven PROVIDER_ERROR', async () => {
+  let calls = 0;
+  const mockFetch: FetchLike = async () => {
+    calls++;
+    return new Response(
+      JSON.stringify({ error: { code: 503, message: 'The model is overloaded.', status: 'UNAVAILABLE' } }),
+      { status: 503 }
+    );
+  };
+
+  await withTestServer({ GEMINI_RETRY_BASE_DELAY_MS: '10', GEMINI_MAX_RETRIES: '2' }, mockFetch, async baseUrl => {
+    const res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '¿Cómo organizo mis tareas?' }],
+      }),
+    });
+
+    assert.equal(res.status, 502);
+    assert.equal(calls, 3); // 1 inicial + 2 reintentos
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.error.code, 'PROVIDER_ERROR');
+    assert.equal(body.error.message.includes('503'), true);
+  });
+});
+
+test('11. Error de autenticación (401 / 403 / INVALID_ARGUMENT) no se reintenta y devuelve INVALID_API_KEY', async () => {
+  let calls = 0;
+  const mockFetch: FetchLike = async () => {
+    calls++;
+    return new Response(
+      JSON.stringify({ error: { code: 401, message: 'API key not valid', status: 'UNAUTHENTICATED' } }),
+      { status: 401 }
+    );
+  };
+
+  await withTestServer({ GEMINI_RETRY_BASE_DELAY_MS: '10' }, mockFetch, async baseUrl => {
+    const res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '¿Cómo organizo mis tareas?' }],
+      }),
+    });
+
+    assert.equal(res.status, 502);
+    assert.equal(calls, 1); // Exactamente 1 intento, sin reintentos
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.error.code, 'INVALID_API_KEY');
+  });
+});
+
+test('12. Error de conexión transitorio (fetch failed / socket) se reintenta y recupera', async () => {
+  let calls = 0;
+  const mockFetch: FetchLike = async () => {
+    calls++;
+    if (calls === 1) {
+      const netErr = new TypeError('fetch failed: ECONNRESET');
+      throw netErr;
+    }
+    return new Response(
+      JSON.stringify({
+        candidates: [{ content: { role: 'model', parts: [{ text: 'Recuperado tras error de red.' }] } }],
+      }),
+      { status: 200 }
+    );
+  };
+
+  await withTestServer({ GEMINI_RETRY_BASE_DELAY_MS: '10' }, mockFetch, async baseUrl => {
+    const res = await fetch(`${baseUrl}/api/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: '¿Cómo organizo mis tareas?' }],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(calls, 2);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.data.reply, 'Recuperado tras error de red.');
+  });
+});
+
+test('13. Cancelación de solicitud por el cliente: no duplica peticiones ni reintenta', async () => {
+  let calls = 0;
+  const abortController = new AbortController();
+
+  const mockFetch: FetchLike = async () => {
+    calls++;
+    abortController.abort();
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    throw err;
+  };
+
+  const { GeminiClient } = await import('../src/ai/gemini.client.ts');
+  const client = new GeminiClient(
+    loadBackendConfig({
+      GEMINI_API_KEY: 'test-key',
+      GEMINI_TIMEOUT_MS: '1000',
+      GEMINI_RETRY_BASE_DELAY_MS: '10',
+    }),
+    mockFetch
+  );
+
+  let caughtError: any = null;
+  try {
+    await client.sendGenerateContent(
+      [{ role: 'user', content: '¿Tareas?' }],
+      'Instrucción',
+      abortController.signal
+    );
+  } catch (err: any) {
+    caughtError = err;
+  }
+
+  assert.equal(calls, 1);
+  assert.equal(caughtError !== null, true);
+});
+
+test('14. Respeto de timeouts y límite total de presupuesto', async () => {
+  const mockFetch: FetchLike = async () => {
+    await new Promise(r => setTimeout(r, 60));
+    return new Response(
+      JSON.stringify({ error: { code: 503, message: 'Unavailable', status: 'UNAVAILABLE' } }),
+      { status: 503 }
+    );
+  };
+
+  await withTestServer(
+    {
+      GEMINI_TIMEOUT_MS: '200',
+      GEMINI_TOTAL_TIMEOUT_MS: '100',
+      GEMINI_RETRY_BASE_DELAY_MS: '50',
+    },
+    mockFetch,
+    async baseUrl => {
+      const res = await fetch(`${baseUrl}/api/ai/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: '¿Cómo organizo mis tareas?' }],
+        }),
+      });
+
+      assert.equal(res.status, 504);
+      const body = await res.json();
+      assert.equal(body.error.code, 'TIMEOUT');
+    }
+  );
+});
+
+test('15. Compatibilidad de códigos de error devueltos por el backend con los interpretados por Tauri', async () => {
+  const expectedTauriCodes = [
+    'TIMEOUT',
+    'PROVIDER_ERROR',
+    'INVALID_API_KEY',
+    'MODEL_UNAVAILABLE',
+    'RATE_LIMITED',
+    'MISSING_API_KEY',
+    'BAD_REQUEST',
+    'MESSAGE_TOO_LONG',
+  ];
+
+  const { classifyGeminiHttpError } = await import('../src/ai/gemini.client.ts');
+
+  const authErr = classifyGeminiHttpError(401, '{"error":{"status":"UNAUTHENTICATED"}}', 'key');
+  assert.equal(expectedTauriCodes.includes(authErr.code), true);
+
+  const modelErr = classifyGeminiHttpError(404, '{"error":{"status":"NOT_FOUND"}}', 'key');
+  assert.equal(expectedTauriCodes.includes(modelErr.code), true);
+
+  const rateErr = classifyGeminiHttpError(429, '{"error":{"status":"RESOURCE_EXHAUSTED"}}', 'key');
+  assert.equal(expectedTauriCodes.includes(rateErr.code), true);
+
+  const providerErr = classifyGeminiHttpError(503, 'Unavailable', 'key');
+  assert.equal(expectedTauriCodes.includes(providerErr.code), true);
+});
+
