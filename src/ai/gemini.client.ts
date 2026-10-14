@@ -4,7 +4,7 @@ import { AppError, scrubSecrets } from '../errors/app-error.ts';
 import type { AiChatResult, ChatMessageDto, FetchLike } from './ai.types.ts';
 
 export const GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-export const MAX_OUTPUT_TOKENS = 420;
+export const MAX_OUTPUT_TOKENS = 320;
 export const DEFAULT_TEMPERATURE = 0.3;
 
 export function buildGeminiEndpointUrl(model: string): string {
